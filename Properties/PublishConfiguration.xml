@@ -8,6 +8,15 @@
 	<!--Long description of the mod. Single line or multi line. Supports minimal markdown subset-->
 	<!--LongDescription Value="This is a long description" /-->
 	<LongDescription>
+### What does this mod do?
+
+- Impose limit on daily spending on virtual goods based on income of Household
+- Impose limit on househould how much virtual goods can be purchused at once, based on size of Household
+- Reserves 2x rent of Household
+- Impose limit on 25% of Household surplus on spending on any purchases
+- Fixing a bug on TradeCost, resulting in not changing TradeCost if order is failed/canceled
+- Fixing other bugs and boost performance a bit
+
 ### Support and feedback
 
 Feedback is welcome through GitHub or Discord links on the right.
@@ -17,10 +26,6 @@ Support provided to on [Cities: Skylines Modding > Remove Abandoned Cars](https:
 
 ### Credits
 - Necko1996 - author/maintainer
-- Thanks to yenyang - introducing me on how to delete things in game and explaining
-- Thanks to krzychu124 - code review, explaining how CS2 works
-- Thanks to Mimonsi - used inspiration from his mods (more about it in Important section)
-- Thanks to River-mochi - naming the mod
 
 	</LongDescription>
 
@@ -32,9 +37,9 @@ Support provided to on [Cities: Skylines Modding > Remove Abandoned Cars](https:
 	<!--Tag, can be set multiple times-->
 	<Tag Value="Code Mod" />
 	<!--Link to the forum post where the mod can be discussed-->
-	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/remove-abandoned-cars.1935461/" />
+	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/virtual-goods-fix.1950149/" />
 	<!--Version of the mod-->
-	<ModVersion Value="1.1.1" />
+	<ModVersion Value="1.0.0" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -44,13 +49,12 @@ Support provided to on [Cities: Skylines Modding > Remove Abandoned Cars](https:
 
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-## v1.1.1
+## v1.0.0
 
-- Recompile for v1.6.2f1
-- New thumbnail
+- Initial Release
 
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
-	<ExternalLink Type="github" Url="https://github.com/Necko1996/RemoveAbandonedCars" />
+	<ExternalLink Type="github" Url="https://github.com/Necko1996/VirtualGoodsFix" />
 	<ExternalLink Type="discord" Url="https://discord.gg/v8BbXjczMd" />
 </Publish>

@@ -1,6 +1,5 @@
 ﻿#define UNITY_ASSERTIONS
 using System;
-using System.Runtime.CompilerServices;
 using System.Threading;
 using Game;
 using Game.Areas;
