@@ -5,8 +5,8 @@ using Game.Modding;
 using Game.SceneFlow;
 using Game.Settings;
 using Game.Simulation;
-using RemoveAbandonedCars.Systems;
 using Unity.Entities;
+using VirtualGoodsFix.Systems;
 
 namespace VirtualGoodsFix
 {
@@ -32,7 +32,6 @@ namespace VirtualGoodsFix
 
             World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<ResourceBuyerSystem>().Enabled = false;
 
-            //updateSystem.UpdateBefore<RACPathfindQueueSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateAt<VGFResourceBuyerSystem>(SystemUpdatePhase.GameSimulation);
         }
 

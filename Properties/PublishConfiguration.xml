@@ -32,14 +32,15 @@ Support provided to on [Cities: Skylines Modding > Virtual Goods Fix](https://di
 	<!--Thumbnail-->
 	<Thumbnail Value="Properties/Thumbnail.png" />
 	<!--Screenshot, can be set multiple times-->
-
+	<Screenshot Value="Properties/Screenshots/Screenshot_1.png" />
+	<Screenshot Value="Properties/Screenshots/Screenshot_2.png" />
 
 	<!--Tag, can be set multiple times-->
 	<Tag Value="Code Mod" />
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/virtual-goods-fix.1950149/" />
 	<!--Version of the mod-->
-	<ModVersion Value="1.0.0" />
+	<ModVersion Value="1.0.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -49,9 +50,9 @@ Support provided to on [Cities: Skylines Modding > Virtual Goods Fix](https://di
 
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-## v1.0.0
+## v1.0.1
 
-- Initial Release
+- Further optimizations 
 
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->

@@ -1,5 +1,4 @@
-﻿#define UNITY_ASSERTIONS
-using System;
+﻿using System;
 using System.Threading;
 using Game;
 using Game.Areas;
@@ -19,7 +18,6 @@ using Game.Routes;
 using Game.Simulation;
 using Game.Tools;
 using Game.Vehicles;
-using Unity.Assertions;
 using Unity.Burst;
 using Unity.Burst.Intrinsics;
 using Unity.Collections;
@@ -28,9 +26,8 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.Scripting;
 
-namespace RemoveAbandonedCars.Systems
+namespace VirtualGoodsFix.Systems
 {
     public partial class VGFResourceBuyerSystem : GameSystemBase
     {
@@ -141,9 +138,6 @@ namespace RemoveAbandonedCars.Systems
             [ReadOnly]
             public PersonalCarSelectData m_PersonalCarSelectData;
 
-            [ReadOnly]
-            public ComponentLookup<Population> m_PopulationData;
-
             public NativeArray<int> m_CitizenConsumptionAccumulator;
 
             public Entity m_PopulationEntity;
@@ -158,48 +152,42 @@ namespace RemoveAbandonedCars.Systems
             public void Execute()
             {
                 Unity.Mathematics.Random random = m_RandomSeed.GetRandom(0);
-                _ = m_PopulationData[m_PopulationEntity];
-                
+
                 SalesEvent item;
                 while (m_SalesQueue.TryDequeue(out item))
                 {
-                    if (item.m_Amount == 0 || !m_Resources.HasBuffer(item.m_Buyer))
+                    if (item.m_Amount == 0 || !m_Resources.TryGetBuffer(item.m_Buyer, out var buyerResources))
                     {
                         continue;
                     }
 
                     Entity resourcePrefab = m_ResourcePrefabs[item.m_Resource];
                     bool isVirtual = m_ResourceDatas[resourcePrefab].m_Weight == 0f || (item.m_Flags & SaleFlags.Virtual) != 0;
-                    if (!isVirtual && (item.m_Flags & SaleFlags.ImportFromOC) == 0 && m_Resources.HasBuffer(item.m_Seller) && EconomyUtils.GetResources(item.m_Resource, m_Resources[item.m_Seller]) <= 0)
+                    if (!isVirtual && (item.m_Flags & SaleFlags.ImportFromOC) == 0 && m_Resources.TryGetBuffer(item.m_Seller, out var resourceSeller2) && EconomyUtils.GetResources(item.m_Resource, resourceSeller2) <= 0)
                     {
                         continue;
                     }
 
-
                     bool flag = (item.m_Flags & SaleFlags.CommercialSeller) != 0;
                     float num = (flag ? EconomyUtils.GetMarketPrice(item.m_Resource, m_ResourcePrefabs, ref m_ResourceDatas) : EconomyUtils.GetIndustrialPrice(item.m_Resource, m_ResourcePrefabs, ref m_ResourceDatas)) * (float)item.m_Amount;
 
-                    bool sellerHasTradeCosts = m_TradeCosts.HasBuffer(item.m_Seller);
-                    bool buyerHasTradeCosts = m_TradeCosts.HasBuffer(item.m_Buyer);
-
-
-                    if (sellerHasTradeCosts)
+                    if (m_TradeCosts.TryGetBuffer(item.m_Seller, out DynamicBuffer<TradeCost> sellerCosts))
                     {
-                        DynamicBuffer<TradeCost> costs = m_TradeCosts[item.m_Seller];
-                        TradeCost tradeCost = EconomyUtils.GetTradeCost(item.m_Resource, costs);
+                        bool buyerHasTradeCosts = m_TradeCosts.TryGetBuffer(item.m_Buyer, out DynamicBuffer<TradeCost> buyerCosts);
+
+                        TradeCost tradeCost = EconomyUtils.GetTradeCost(item.m_Resource, sellerCosts);
                         num += (float)item.m_Amount * tradeCost.m_BuyCost;
                         float weight = EconomyUtils.GetWeight(item.m_Resource, m_ResourcePrefabs, ref m_ResourceDatas);
-                        Assert.IsTrue(item.m_Amount != -1);
                         float num2 = (float)EconomyUtils.GetTransportCost(item.m_Distance, item.m_Resource, item.m_Amount, weight) / (1f + (float)item.m_Amount);
                         TradeCost newcost = default(TradeCost);
                         if (buyerHasTradeCosts)
                         {
-                            newcost = EconomyUtils.GetTradeCost(item.m_Resource, m_TradeCosts[item.m_Buyer]);
+                            newcost = EconomyUtils.GetTradeCost(item.m_Resource, buyerCosts);
                         }
-                        if (!m_OutsideConnections.HasComponent(item.m_Seller) && !flag)
+                        if (!flag && !m_OutsideConnections.HasComponent(item.m_Seller))
                         {
                             tradeCost.m_SellCost = math.lerp(tradeCost.m_SellCost, num2 + newcost.m_SellCost, 0.5f);
-                            EconomyUtils.SetTradeCost(item.m_Resource, tradeCost, costs, keepLastTime: true);
+                            EconomyUtils.SetTradeCost(item.m_Resource, tradeCost, sellerCosts, keepLastTime: true);
                         }
                         if (buyerHasTradeCosts && !m_OutsideConnections.HasComponent(item.m_Buyer))
                         {
@@ -211,61 +199,58 @@ namespace RemoveAbandonedCars.Systems
                             {
                                 newcost.m_BuyCost = math.lerp(newcost.m_BuyCost, num2 + tradeCost.m_BuyCost, 0.5f);
                             }
-                            EconomyUtils.SetTradeCost(item.m_Resource, newcost, m_TradeCosts[item.m_Buyer], keepLastTime: true);
+                            EconomyUtils.SetTradeCost(item.m_Resource, newcost, buyerCosts, keepLastTime: true);
                         }
                     }
 
-                    bool sellerHasPropertyRenter = m_PropertyRenters.HasComponent(item.m_Seller);
+                    bool sellerHasPropertyRenter = m_PropertyRenters.TryGetComponent(item.m_Seller, out PropertyRenter sellerPropertyRenter);
                     bool sellerIsStorage = m_Storages.HasComponent(item.m_Seller);
 
-                    if (flag && m_Services.HasComponent(item.m_Seller) && sellerHasPropertyRenter)
+                    if (flag && sellerHasPropertyRenter && m_Services.TryGetComponent(item.m_Seller, out ServiceAvailable serviceSeller))
                     {
                         Entity prefab = m_Prefabs[item.m_Seller].m_Prefab;
-                        ServiceAvailable value = m_Services[item.m_Seller];
                         ServiceCompanyData serviceCompanyData = m_ServiceCompanies[prefab];
-                        num *= EconomyUtils.GetServicePriceMultiplier(value.m_ServiceAvailable, serviceCompanyData.m_MaxService);
-                        value.m_ServiceAvailable = math.max(0, Mathf.RoundToInt(value.m_ServiceAvailable - item.m_Amount));
-                        if (value.m_MeanPriority > 0f)
+                        num *= EconomyUtils.GetServicePriceMultiplier(serviceSeller.m_ServiceAvailable, serviceCompanyData.m_MaxService);
+
+                        serviceSeller.m_ServiceAvailable = math.max(0, Mathf.RoundToInt(serviceSeller.m_ServiceAvailable - item.m_Amount));
+                        if (serviceSeller.m_MeanPriority > 0f)
                         {
-                            value.m_MeanPriority = math.min(1f, math.lerp(value.m_MeanPriority, (float)value.m_ServiceAvailable / (float)serviceCompanyData.m_MaxService, 0.1f));
+                            serviceSeller.m_MeanPriority = math.min(1f, math.lerp(serviceSeller.m_MeanPriority, (float)serviceSeller.m_ServiceAvailable / (float)serviceCompanyData.m_MaxService, 0.1f));
                         }
                         else
                         {
-                            value.m_MeanPriority = math.min(1f, (float)value.m_ServiceAvailable / (float)serviceCompanyData.m_MaxService);
+                            serviceSeller.m_MeanPriority = math.min(1f, (float)serviceSeller.m_ServiceAvailable / (float)serviceCompanyData.m_MaxService);
                         }
-                        m_Services[item.m_Seller] = value;
+                        m_Services[item.m_Seller] = serviceSeller;
                     }
 
 
-                    if (m_Resources.HasBuffer(item.m_Seller) && !sellerIsStorage)
+                    if (!sellerIsStorage && m_Resources.TryGetBuffer(item.m_Seller, out var sellerWriteResources))
                     {
-                        DynamicBuffer<Game.Economy.Resources> resources = m_Resources[item.m_Seller];
-                        int resources2 = EconomyUtils.GetResources(item.m_Resource, resources);
-                        EconomyUtils.AddResources(item.m_Resource, -math.min(resources2, Mathf.RoundToInt(item.m_Amount)), resources);
+                        int resources2 = EconomyUtils.GetResources(item.m_Resource, sellerWriteResources);
+                        EconomyUtils.AddResources(item.m_Resource, -math.min(resources2, item.m_Amount), sellerWriteResources);
                     }
-                    EconomyUtils.AddResources(Resource.Money, -Mathf.RoundToInt(num), m_Resources[item.m_Buyer]);
+                    EconomyUtils.AddResources(Resource.Money, -Mathf.RoundToInt(num), buyerResources);
 
 
-                    if (m_Households.HasComponent(item.m_Buyer))
+                    if (m_Households.TryGetComponent(item.m_Buyer, out Household householdValue))
                     {
-                        Household value2 = m_Households[item.m_Buyer];
-                        value2.m_Resources = (int)math.clamp((long)((float)value2.m_Resources + num), -2147483648L, 2147483647L);
-                        value2.m_ShoppedValuePerDay += (uint)math.max(0f, num);
-                        m_Households[item.m_Buyer] = value2;
+                        householdValue.m_Resources = (int)math.clamp((long)((float)householdValue.m_Resources + num), -2147483648L, 2147483647L);
+                        householdValue.m_ShoppedValuePerDay += (uint)math.max(0f, num);
+                        m_Households[item.m_Buyer] = householdValue;
                         int resourceIndex = EconomyUtils.GetResourceIndex(item.m_Resource);
                         if (resourceIndex >= 0 && resourceIndex < m_CitizenConsumptionAccumulator.Length)
                         {
                             m_CitizenConsumptionAccumulator[resourceIndex] += item.m_Amount;
                         }
                     }
-                    else if (m_BuyingCompanies.HasComponent(item.m_Buyer))
+                    else if (m_BuyingCompanies.TryGetComponent(item.m_Buyer, out BuyingCompany buyingCompanyValue))
                     {
-                        BuyingCompany value3 = m_BuyingCompanies[item.m_Buyer];
-                        value3.m_LastTradePartner = item.m_Seller;
-                        m_BuyingCompanies[item.m_Buyer] = value3;
+                        buyingCompanyValue.m_LastTradePartner = item.m_Seller;
+                        m_BuyingCompanies[item.m_Buyer] = buyingCompanyValue;
                         if (isVirtual)
                         {
-                            EconomyUtils.AddResources(item.m_Resource, item.m_Amount, m_Resources[item.m_Buyer]);
+                            EconomyUtils.AddResources(item.m_Resource, item.m_Amount, buyerResources);
                         }
                     }
                     if (!sellerIsStorage && sellerHasPropertyRenter)
@@ -273,34 +258,34 @@ namespace RemoveAbandonedCars.Systems
                         DynamicBuffer<Game.Economy.Resources> resources3 = m_Resources[item.m_Seller];
                         EconomyUtils.AddResources(Resource.Money, Mathf.RoundToInt(num), resources3);
                     }
-                    if (m_CompanyStatistics.HasComponent(item.m_Seller))
+                    if (m_CompanyStatistics.TryGetComponent(item.m_Seller, out CompanyStatisticData companyStatisticBuyer))
                     {
-                        CompanyStatisticData value4 = m_CompanyStatistics[item.m_Seller];
-                        value4.m_CurrentNumberOfCustomers++;
-                        m_CompanyStatistics[item.m_Seller] = value4;
+                        companyStatisticBuyer.m_CurrentNumberOfCustomers++;
+                        m_CompanyStatistics[item.m_Seller] = companyStatisticBuyer;
                     }
-                    if (m_CompanyStatistics.HasComponent(item.m_Buyer))
+                    if (m_CompanyStatistics.TryGetComponent(item.m_Buyer, out CompanyStatisticData companyStatisticSeller))
                     {
-                        CompanyStatisticData value5 = m_CompanyStatistics[item.m_Buyer];
-                        value5.m_CurrentCostOfBuyingResources += math.abs((int)num);
-                        m_CompanyStatistics[item.m_Buyer] = value5;
+                        companyStatisticSeller.m_CurrentCostOfBuyingResources += math.abs((int)num);
+                        m_CompanyStatistics[item.m_Buyer] = companyStatisticSeller;
                     }
                     if (item.m_Resource != Resource.Vehicles || item.m_Amount != HouseholdBehaviorSystem.kCarAmount || !sellerHasPropertyRenter)
                     {
                         continue;
                     }
-                    Entity property = m_PropertyRenters[item.m_Seller].m_Property;
-                    if (!m_TransformDatas.HasComponent(property) || !m_HouseholdCitizens.HasBuffer(item.m_Buyer))
+                    Entity property = sellerPropertyRenter.m_Property;
+                    if (
+                        !m_TransformDatas.TryGetComponent(property, out Game.Objects.Transform transform) ||
+                        !m_HouseholdCitizens.TryGetBuffer(item.m_Buyer, out DynamicBuffer<HouseholdCitizen> buyerCitizens))
                     {
                         continue;
                     }
                     Entity entity = item.m_Buyer;
-                    Game.Objects.Transform transform = m_TransformDatas[property];
-                    int length = m_HouseholdCitizens[entity].Length;
-                    int num3 = (m_HouseholdAnimals.HasBuffer(entity) ? m_HouseholdAnimals[entity].Length : 0);
+                    int length = buyerCitizens.Length;
+                    int num3 = (m_HouseholdAnimals.TryGetBuffer(entity, out DynamicBuffer<HouseholdAnimal> buyerAnimals) ? buyerAnimals.Length : 0);
                     int passengerAmount;
                     int num4;
-                    if (m_OwnedVehicles.HasBuffer(entity) && m_OwnedVehicles[entity].Length >= 1)
+                    bool hasOwnedVehicles = m_OwnedVehicles.TryGetBuffer(entity, out DynamicBuffer<OwnedVehicle> ownedVehicles);
+                    if (hasOwnedVehicles && ownedVehicles.Length >= 1)
                     {
                         passengerAmount = random.NextInt(1, 1 + length);
                         num4 = random.NextInt(1, 2 + num3);
@@ -318,7 +303,7 @@ namespace RemoveAbandonedCars.Systems
                     if (entity2 != Entity.Null)
                     {
                         m_CommandBuffer.AddComponent(entity2, new Owner(entity));
-                        if (!m_OwnedVehicles.HasBuffer(entity))
+                        if (!hasOwnedVehicles)
                         {
                             m_CommandBuffer.AddBuffer<OwnedVehicle>(entity);
                         }
@@ -409,9 +394,6 @@ namespace RemoveAbandonedCars.Systems
 
             [ReadOnly]
             public BufferLookup<HouseholdCitizen> m_HouseholdCitizens;
-
-            [ReadOnly]
-            public BufferLookup<OwnedVehicle> m_OwnedVehicles;
 
             [ReadOnly]
             public BufferLookup<GuestVehicle> m_GuestVehicles;
@@ -585,6 +567,11 @@ namespace RemoveAbandonedCars.Systems
 
             private void ProcessResourceBuyer(ArchetypeChunk chunk, int unfilteredChunkIndex, NativeArray<ResourceBuyer> resourceBuyingRequests, NativeArray<Entity> entities, BufferAccessor<TripNeeded> tripBuffers, NativeArray<Citizen> citizens, Unity.Mathematics.Random random, NativeArray<AttendingMeeting> meetings)
             {
+                if (resourceBuyingRequests.Length == 0)
+                {
+                    return;
+                }
+
                 bool flag = citizens.Length > 0;
 
                 int population = m_Populations[m_City].m_Population;
@@ -603,9 +590,8 @@ namespace RemoveAbandonedCars.Systems
                     {
                         flag2 = EconomyUtils.GetWeight(resourceBuyer.m_ResourceNeeded, m_ResourcePrefabs, ref m_ResourceDatas) == 0f;
                     }
-                    if (m_PathInformation.HasComponent(entity))
+                    if (m_PathInformation.TryGetComponent(entity, out PathInformation pathInformation))
                     {
-                        PathInformation pathInformation = m_PathInformation[entity];
                         if ((pathInformation.m_State & PathFlags.Pending) != 0)
                         {
                             continue;
@@ -647,18 +633,8 @@ namespace RemoveAbandonedCars.Systems
                             {
                                 saleFlags |= SaleFlags.ImportFromOC;
                             }
-                            //if (m_Households.HasComponent(resourceBuyer.m_Payer) && m_Resources.HasBuffer(resourceBuyer.m_Payer))
-                            //{
-                            //    int num3 = math.max(0, EconomyUtils.GetResources(Resource.Money, m_Resources[resourceBuyer.m_Payer]) - HouseholdBehaviorSystem.kMinimumShoppingMoney);
-                            //    float marketPrice = EconomyUtils.GetMarketPrice(resourceBuyer.m_ResourceNeeded, m_ResourcePrefabs, ref m_ResourceDatas);
-                            //    float num4 = 1.4f;
-                            //    int y = (((float)num3 > 0f) ? ((int)((float)num3 / (marketPrice * num4))) : 0);
-                            //    resourceBuyer.m_AmountNeeded = math.min(resourceBuyer.m_AmountNeeded, y);
-                            //}
-                            if (m_Households.HasComponent(resourceBuyer.m_Payer) && m_Resources.HasBuffer(resourceBuyer.m_Payer))
+                            if (m_Households.TryGetComponent(resourceBuyer.m_Payer, out Household householdData) && m_Resources.TryGetBuffer(resourceBuyer.m_Payer, out DynamicBuffer<Game.Economy.Resources> payerResources))
                             {
-                                Household householdData = m_Households[resourceBuyer.m_Payer];
-
                                 int dailyShoppingAllowance = math.max(1500, householdData.m_Income / 2);
 
                                 // FIX A: If this is a virtual good AND the household has already shopped today, skip!
@@ -669,7 +645,7 @@ namespace RemoveAbandonedCars.Systems
                                 else
                                 {
 
-                                    int currentMoney = EconomyUtils.GetResources(Resource.Money, m_Resources[resourceBuyer.m_Payer]);
+                                    int currentMoney = EconomyUtils.GetResources(Resource.Money, payerResources);
 
                                     // 1. Look up actual monthly rent for this household
                                     int rentReserve = 0;
@@ -693,8 +669,8 @@ namespace RemoveAbandonedCars.Systems
 
                                     if (flag2) // flag2 is already defined on line 605 as (Weight == 0f)
                                     {
-                                        int householdSize = m_HouseholdCitizens.HasBuffer(resourceBuyer.m_Payer)
-                                            ? m_HouseholdCitizens[resourceBuyer.m_Payer].Length
+                                        int householdSize = m_HouseholdCitizens.TryGetBuffer(resourceBuyer.m_Payer, out var payerCitizens)
+                                            ? payerCitizens.Length
                                             : 1;
 
                                         // Caps order to max 3 units per family member (e.g. 3 to 9 units per order)
@@ -783,14 +759,24 @@ namespace RemoveAbandonedCars.Systems
                             }
                         }
                     }
-                    else if ((!m_HouseholdMembers.HasComponent(entity) || (!m_TouristHouseholds.HasComponent(m_HouseholdMembers[entity].m_Household) && !m_CommuterHouseholds.HasComponent(m_HouseholdMembers[entity].m_Household))) && m_CurrentBuildings.HasComponent(entity) && m_OutsideConnections.HasComponent(m_CurrentBuildings[entity].m_CurrentBuilding) && !meetings.IsCreated)
+                    else if (
+                        !meetings.IsCreated &&
+                            (
+                                !m_HouseholdMembers.TryGetComponent(entity, out HouseholdMember householdMember) ||
+                                (
+                                    !m_TouristHouseholds.HasComponent(householdMember.m_Household) &&
+                                    !m_CommuterHouseholds.HasComponent(householdMember.m_Household)
+                                 )
+                            ) &&
+                        m_CurrentBuildings.TryGetComponent(entity, out CurrentBuilding currentBuilding) &&
+                        m_OutsideConnections.HasComponent(currentBuilding.m_CurrentBuilding))
                     {
                         SaleFlags flags = SaleFlags.ImportFromOC;
                         SalesEvent value3 = new SalesEvent
                         {
                             m_Amount = resourceBuyer.m_AmountNeeded,
                             m_Buyer = resourceBuyer.m_Payer,
-                            m_Seller = m_CurrentBuildings[entity].m_CurrentBuilding,
+                            m_Seller = currentBuilding.m_CurrentBuilding,
                             m_Resource = resourceBuyer.m_ResourceNeeded,
                             m_Flags = flags,
                             m_Distance = 0f
@@ -871,31 +857,23 @@ namespace RemoveAbandonedCars.Systems
                     entity2 = componentData2.m_Property;
                     parameters.m_Authorization1 = componentData2.m_Property;
                 }
-                if (m_Workers.HasComponent(buyer))
+                if (m_Workers.TryGetComponent(buyer, out Worker worker))
                 {
-                    Worker worker = m_Workers[buyer];
-                    if (m_Properties.HasComponent(worker.m_Workplace))
+                    if (m_Properties.TryGetComponent(worker.m_Workplace, out PropertyRenter workplaceProperty))
                     {
-                        parameters.m_Authorization2 = m_Properties[worker.m_Workplace].m_Property;
+                        parameters.m_Authorization2 = workplaceProperty.m_Property;
                     }
                     else
                     {
                         parameters.m_Authorization2 = worker.m_Workplace;
                     }
                 }
-                float value = 20f;
-                if (m_CurrentDistrictData.TryGetComponent(entity2, out var componentData3) && m_DistrictModifiers.TryGetBuffer(componentData3.m_District, out var bufferData))
-                {
-                    AreaUtils.ApplyModifier(ref value, bufferData, DistrictModifierType.BikeProbability);
-                }
-                bool flag = random.NextFloat(100f) < value;
                 if (m_CarKeepers.IsComponentEnabled(buyer))
                 {
                     Entity car = m_CarKeepers[buyer].m_Car;
-                    if (m_ParkedCarData.HasComponent(car))
+                    if (m_ParkedCarData.TryGetComponent(car, out ParkedCar parkedCar))
                     {
                         PrefabRef prefabRef = m_PrefabRefData[car];
-                        ParkedCar parkedCar = m_ParkedCarData[car];
                         CarData carData = m_PrefabCarData[prefabRef.m_Prefab];
                         parameters.m_MaxSpeed.x = carData.m_MaxSpeed;
                         parameters.m_ParkingTarget = parkedCar.m_Lane;
@@ -909,33 +887,42 @@ namespace RemoveAbandonedCars.Systems
                         }
                     }
                 }
-                else if (m_BicycleOwners.IsComponentEnabled(buyer) & flag)
+                else if (m_BicycleOwners.IsComponentEnabled(buyer))
                 {
-                    Entity bicycle = m_BicycleOwners[buyer].m_Bicycle;
-                    if (!m_PrefabRefData.TryGetComponent(bicycle, out var componentData5) && m_CurrentBuildings.TryGetComponent(buyer, out var componentData6) && componentData6.m_CurrentBuilding == entity2)
+                    float value = 20f;
+                    if (m_CurrentDistrictData.TryGetComponent(entity2, out var componentData3) && m_DistrictModifiers.TryGetBuffer(componentData3.m_District, out var bufferData))
                     {
-                        Unity.Mathematics.Random random2 = citizenData.GetPseudoRandom(CitizenPseudoRandom.BicycleModel);
-                        componentData5.m_Prefab = m_PersonalCarSelectData.SelectVehiclePrefab(ref random2, 1, 0, avoidTrailers: true, noSlowVehicles: false, bicycle: true, out var _);
+                        AreaUtils.ApplyModifier(ref value, bufferData, DistrictModifierType.BikeProbability);
                     }
-                    if (m_PrefabCarData.TryGetComponent(componentData5.m_Prefab, out var componentData7) && m_ObjectGeometryData.TryGetComponent(componentData5.m_Prefab, out var componentData8))
+
+                    if (random.NextFloat(100f) < value)
                     {
-                        parameters.m_MaxSpeed.x = componentData7.m_MaxSpeed;
-                        parameters.m_ParkingSize = VehicleUtils.GetParkingSize(componentData8, out var _);
-                        parameters.m_Methods |= PathMethod.Bicycle | PathMethod.BicycleParking;
-                        parameters.m_IgnoredRules = VehicleUtils.GetIgnoredPathfindRulesBicycleDefaults();
-                        if (m_ParkedCarData.TryGetComponent(bicycle, out var componentData9))
+                        Entity bicycle = m_BicycleOwners[buyer].m_Bicycle;
+                        if (!m_PrefabRefData.TryGetComponent(bicycle, out var componentData5) && m_CurrentBuildings.TryGetComponent(buyer, out var componentData6) && componentData6.m_CurrentBuilding == entity2)
                         {
-                            parameters.m_ParkingTarget = componentData9.m_Lane;
-                            parameters.m_ParkingDelta = componentData9.m_CurvePosition;
-                            if (m_PersonalCarData.TryGetComponent(bicycle, out var componentData10) && (componentData10.m_State & PersonalCarFlags.HomeTarget) == 0)
-                            {
-                                parameters.m_PathfindFlags |= PathfindFlags.ParkingReset;
-                            }
+                            Unity.Mathematics.Random random2 = citizenData.GetPseudoRandom(CitizenPseudoRandom.BicycleModel);
+                            componentData5.m_Prefab = m_PersonalCarSelectData.SelectVehiclePrefab(ref random2, 1, 0, avoidTrailers: true, noSlowVehicles: false, bicycle: true, out var _);
                         }
-                        else
+                        if (m_PrefabCarData.TryGetComponent(componentData5.m_Prefab, out var componentData7) && m_ObjectGeometryData.TryGetComponent(componentData5.m_Prefab, out var componentData8))
                         {
-                            origin.m_Methods |= PathMethod.Bicycle;
-                            origin.m_RoadTypes |= RoadTypes.Bicycle;
+                            parameters.m_MaxSpeed.x = componentData7.m_MaxSpeed;
+                            parameters.m_ParkingSize = VehicleUtils.GetParkingSize(componentData8, out var _);
+                            parameters.m_Methods |= PathMethod.Bicycle | PathMethod.BicycleParking;
+                            parameters.m_IgnoredRules = VehicleUtils.GetIgnoredPathfindRulesBicycleDefaults();
+                            if (m_ParkedCarData.TryGetComponent(bicycle, out var componentData9))
+                            {
+                                parameters.m_ParkingTarget = componentData9.m_Lane;
+                                parameters.m_ParkingDelta = componentData9.m_CurvePosition;
+                                if (m_PersonalCarData.TryGetComponent(bicycle, out var componentData10) && (componentData10.m_State & PersonalCarFlags.HomeTarget) == 0)
+                                {
+                                    parameters.m_PathfindFlags |= PathfindFlags.ParkingReset;
+                                }
+                            }
+                            else
+                            {
+                                origin.m_Methods |= PathMethod.Bicycle;
+                                origin.m_RoadTypes |= RoadTypes.Bicycle;
+                            }
                         }
                     }
                 }
@@ -1013,8 +1000,6 @@ namespace RemoveAbandonedCars.Systems
 
         private SimulationSystem m_SimulationSystem;
 
-        private TaxSystem m_TaxSystem;
-
         private TimeSystem m_TimeSystem;
 
         private CityConfigurationSystem m_CityConfigurationSystem;
@@ -1044,62 +1029,61 @@ namespace RemoveAbandonedCars.Systems
 
         public override int GetUpdateInterval(SystemUpdatePhase phase)
         {
-            return 16;
+            return UPDATE_INTERVAL;
         }
 
-        [Preserve]
         protected override void OnCreate()
         {
             base.OnCreate();
+
             m_EndFrameBarrier = base.World.GetOrCreateSystemManaged<EndFrameBarrier>();
             m_PathfindSetupSystem = base.World.GetOrCreateSystemManaged<PathfindSetupSystem>();
             m_ResourceSystem = base.World.GetOrCreateSystemManaged<ResourceSystem>();
-            m_TaxSystem = base.World.GetOrCreateSystemManaged<TaxSystem>();
             m_TimeSystem = base.World.GetOrCreateSystemManaged<TimeSystem>();
             m_CityConfigurationSystem = base.World.GetOrCreateSystemManaged<CityConfigurationSystem>();
             m_PersonalCarSelectData = new PersonalCarSelectData(this);
             m_CitySystem = base.World.GetOrCreateSystemManaged<CitySystem>();
             m_CityProductionStatisticSystem = base.World.GetOrCreateSystemManaged<CityProductionStatisticSystem>();
             m_SimulationSystem = base.World.GetOrCreateSystemManaged<SimulationSystem>();
+
             m_SalesQueue = new NativeQueue<SalesEvent>(Allocator.Persistent);
             m_BuyerOutcomes = new NativeArray<int>(12, Allocator.Persistent);
             m_FailedShoppingOrigins = new NativeArray<int>(6, Allocator.Persistent);
             m_FailedShoppingResources = new NativeArray<int>(42, Allocator.Persistent);
-            m_BuyerQuery = GetEntityQuery(new EntityQueryDesc
-            {
-                All = new ComponentType[2]
-                {
-                ComponentType.ReadWrite<ResourceBuyer>(),
-                ComponentType.ReadWrite<TripNeeded>()
-                },
-                None = new ComponentType[3]
-                {
-                ComponentType.ReadOnly<TravelPurpose>(),
-                ComponentType.ReadOnly<Deleted>(),
-                ComponentType.ReadOnly<Temp>()
-                }
-            }, new EntityQueryDesc
-            {
-                All = new ComponentType[1] { ComponentType.ReadOnly<ResourceBought>() },
-                None = new ComponentType[2]
-                {
-                ComponentType.ReadOnly<Deleted>(),
-                ComponentType.ReadOnly<Temp>()
-                }
-            });
+
+            m_BuyerQuery = SystemAPI.QueryBuilder()
+                .WithAllRW<ResourceBuyer, TripNeeded>()
+                .WithNone<TravelPurpose, Deleted, Temp>()
+                .AddAdditionalQuery()
+                .WithAll<ResourceBought>()
+                .WithNone<Deleted, Temp>()
+                .Build();
+
+            m_EconomyParameterQuery = SystemAPI.QueryBuilder()
+                .WithAll<EconomyParameterData>()
+                .Build();
+
+            m_PopulationQuery = SystemAPI.QueryBuilder()
+                .WithAll<Population>()
+                .Build();
+
+            m_ResidentPrefabQuery = SystemAPI.QueryBuilder()
+                .WithAll<ObjectData, HumanData, ResidentData, PrefabData>()
+                .Build();
+
+            m_TripPriorityParametersQuery = SystemAPI.QueryBuilder()
+                .WithAll<TripPriorityParametersData>()
+                .Build();
+
             m_CarPrefabQuery = GetEntityQuery(PersonalCarSelectData.GetEntityQueryDesc());
-            m_EconomyParameterQuery = GetEntityQuery(ComponentType.ReadOnly<EconomyParameterData>());
-            m_PopulationQuery = GetEntityQuery(ComponentType.ReadOnly<Population>());
-            m_ResidentPrefabQuery = GetEntityQuery(ComponentType.ReadOnly<ObjectData>(), ComponentType.ReadOnly<HumanData>(), ComponentType.ReadOnly<ResidentData>(), ComponentType.ReadOnly<PrefabData>());
             m_PathfindTypes = new ComponentTypeSet(ComponentType.ReadWrite<PathInformation>(), ComponentType.ReadWrite<PathElement>());
-            m_TripPriorityParametersQuery = GetEntityQuery(ComponentType.ReadOnly<TripPriorityParametersData>());
+
             RequireForUpdate(m_BuyerQuery);
             RequireForUpdate(m_EconomyParameterQuery);
             RequireForUpdate(m_PopulationQuery);
             RequireForUpdate(m_TripPriorityParametersQuery);
         }
 
-        [Preserve]
         protected override void OnDestroy()
         {
             m_SalesQueue.Dispose();
@@ -1109,128 +1093,120 @@ namespace RemoveAbandonedCars.Systems
             base.OnDestroy();
         }
 
-        [Preserve]
         protected override void OnStopRunning()
         {
             base.OnStopRunning();
         }
 
-        [Preserve]
         protected override void OnUpdate()
         {
-            if (m_BuyerQuery.CalculateEntityCount() > 0)
+            if (m_BuyerQuery.IsEmptyIgnoreFilter)
             {
-                m_PersonalCarSelectData.PreUpdate(this, m_CityConfigurationSystem, m_CarPrefabQuery, Allocator.TempJob, out var jobHandle);
-                HandleBuyersJob buyerJob = new HandleBuyersJob
-                {
-                    m_EntityType = GetEntityTypeHandle(),
-                    m_BuyerType = GetComponentTypeHandle<ResourceBuyer>(true),
-                    m_BoughtType = GetComponentTypeHandle<ResourceBought>(true),
-                    m_TripType = GetBufferTypeHandle<TripNeeded>(),
-                    m_CitizenType = GetComponentTypeHandle<Citizen>(true),
-                    m_CreatureDataType = GetComponentTypeHandle<CreatureData>(true),
-                    m_ResidentDataType = GetComponentTypeHandle<ResidentData>(true),
-                    m_AttendingMeetingType = GetComponentTypeHandle<AttendingMeeting>(true),
-
-                    m_ServiceAvailables = GetComponentLookup<ServiceAvailable>(true),
-                    m_PathInformation = GetComponentLookup<PathInformation>(true),
-                    m_Properties = GetComponentLookup<PropertyRenter>(true),
-                    m_CarKeepers = GetComponentLookup<CarKeeper>(true),
-                    m_BicycleOwners = GetComponentLookup<BicycleOwner>(true),
-                    m_ParkedCarData = GetComponentLookup<ParkedCar>(true),
-                    m_PersonalCarData = GetComponentLookup<Game.Vehicles.PersonalCar>(true),
-                    m_Targets = GetComponentLookup<Target>(true),
-                    m_CurrentBuildings = GetComponentLookup<CurrentBuilding>(true),
-                    m_OutsideConnections = GetComponentLookup<Game.Objects.OutsideConnection>(true),
-                    m_HouseholdMembers = GetComponentLookup<HouseholdMember>(true),
-                    m_Households = GetComponentLookup<Household>(true),
-                    m_TouristHouseholds = GetComponentLookup<TouristHousehold>(true),
-                    m_CommuterHouseholds = GetComponentLookup<CommuterHousehold>(true),
-                    m_Workers = GetComponentLookup<Worker>(true),
-                    m_DeliveryTrucks = GetComponentLookup<Game.Vehicles.DeliveryTruck>(true),
-                    m_StorageCompanies = GetComponentLookup<Game.Companies.StorageCompany>(true),
-
-                    m_Resources = GetBufferLookup<Game.Economy.Resources>(true),
-                    m_HouseholdCitizens = GetBufferLookup<HouseholdCitizen>(true),
-                    m_OwnedVehicles = GetBufferLookup<OwnedVehicle>(true),
-                    m_GuestVehicles = GetBufferLookup<GuestVehicle>(true),
-                    m_LayoutElements = GetBufferLookup<LayoutElement>(true),
-
-                    m_ResourcePrefabs = m_ResourceSystem.GetPrefabs(),
-                    m_ResourceDatas = GetComponentLookup<ResourceData>(true),
-                    m_PrefabRefData = GetComponentLookup<PrefabRef>(true),
-                    m_PrefabCarData = GetComponentLookup<CarData>(true),
-                    m_ObjectGeometryData = GetComponentLookup<ObjectGeometryData>(true),
-                    m_PrefabHumanData = GetComponentLookup<HumanData>(true),
-                    m_CoordinatedMeetings = GetComponentLookup<CoordinatedMeeting>(false),
-                    m_HaveCoordinatedMeetingDatas = GetBufferLookup<HaveCoordinatedMeetingData>(true),
-                    m_OutsideConnectionDatas = GetComponentLookup<OutsideConnectionData>(true),
-                    m_Populations = GetComponentLookup<Population>(false),
-                    m_CurrentDistrictData = GetComponentLookup<CurrentDistrict>(true),
-                    m_DistrictModifiers = GetBufferLookup<DistrictModifier>(true),
-
-                    m_TimeOfDay = m_TimeSystem.normalizedTime,
-                    m_FrameIndex = m_SimulationSystem.frameIndex,
-                    m_RandomSeed = RandomSeed.Next(),
-                    m_PathfindTypes = m_PathfindTypes,
-                    m_HumanChunks = m_ResidentPrefabQuery.ToArchetypeChunkListAsync(World.UpdateAllocator.ToAllocator, out JobHandle chunkListHandle),
-                    m_PersonalCarSelectData = m_PersonalCarSelectData,
-                    m_PathfindQueue = m_PathfindSetupSystem.GetQueue(this, 80, 16).AsParallelWriter(),
-                    m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer().AsParallelWriter(),
-                    m_EconomyParameterData = m_EconomyParameterQuery.GetSingleton<EconomyParameterData>(),
-                    m_TripPriorityParameters = m_TripPriorityParametersQuery.GetSingleton<TripPriorityParametersData>(),
-                    m_City = m_CitySystem.City,
-                    m_SalesQueue = m_SalesQueue.AsParallelWriter(),
-
-                    m_BuyerOutcomes = m_BuyerOutcomes,
-                    m_FailedShoppingOrigins = m_FailedShoppingOrigins,
-                    m_FailedShoppingResources = m_FailedShoppingResources
-                };
-                base.Dependency = JobChunkExtensions.ScheduleParallel(buyerJob, m_BuyerQuery, JobHandle.CombineDependencies(base.Dependency, chunkListHandle, jobHandle));
-                m_ResourceSystem.AddPrefabsReader(base.Dependency);
-                m_EndFrameBarrier.AddJobHandleForProducer(base.Dependency);
-                m_PathfindSetupSystem.AddQueueWriter(base.Dependency);
-                m_WriteDeps = JobHandle.CombineDependencies(base.Dependency, m_WriteDeps);
-                BuyJob buyJob = new BuyJob
-                {
-                    m_Resources = GetBufferLookup<Game.Economy.Resources>(false),
-                    m_SalesQueue = m_SalesQueue,
-                    m_Services = GetComponentLookup<ServiceAvailable>(false),
-                    m_TransformDatas = GetComponentLookup<Game.Objects.Transform>(true),
-                    m_PropertyRenters = GetComponentLookup<PropertyRenter>(true),
-                    m_OwnedVehicles = GetBufferLookup<OwnedVehicle>(true),
-                    m_HouseholdCitizens = GetBufferLookup<HouseholdCitizen>(true),
-                    m_HouseholdAnimals = GetBufferLookup<HouseholdAnimal>(true),
-                    m_Prefabs = GetComponentLookup<PrefabRef>(true),
-                    m_ServiceCompanies = GetComponentLookup<ServiceCompanyData>(true),
-                    m_Storages = GetComponentLookup<Game.Companies.StorageCompany>(true),
-                    m_Households = GetComponentLookup<Household>(false),
-                    m_BuyingCompanies = GetComponentLookup<BuyingCompany>(false),
-                    m_ResourceDatas = GetComponentLookup<ResourceData>(true),
-                    m_TradeCosts = GetBufferLookup<TradeCost>(false),
-                    m_CompanyStatistics = GetComponentLookup<CompanyStatisticData>(false),
-                    m_OutsideConnections = GetComponentLookup<Game.Objects.OutsideConnection>(true),
-                    m_ResourcePrefabs = m_ResourceSystem.GetPrefabs(),
-                    m_RandomSeed = RandomSeed.Next(),
-                    m_FrameIndex = m_SimulationSystem.frameIndex,
-                    m_PersonalCarSelectData = m_PersonalCarSelectData,
-                    m_PopulationData = GetComponentLookup<Population>(true),
-                    m_PopulationEntity = m_PopulationQuery.GetSingletonEntity(),
-                    m_CitizenConsumptionAccumulator = m_CityProductionStatisticSystem.GetCityResourceUsageAccumulator(CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens, out JobHandle accumulatorDeps),
-                    m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer()
-                };
-                base.Dependency = IJobExtensions.Schedule(buyJob, JobHandle.CombineDependencies(base.Dependency, accumulatorDeps));
-                m_PersonalCarSelectData.PostUpdate(base.Dependency);
-                m_ResourceSystem.AddPrefabsReader(base.Dependency);
-                m_TaxSystem.AddReader(base.Dependency);
-                m_CityProductionStatisticSystem.AddCityUsageAccumulatorWriter(CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens, base.Dependency);
-                m_EndFrameBarrier.AddJobHandleForProducer(base.Dependency);
+                return;
             }
-        }
 
-        [Preserve]
-        public VGFResourceBuyerSystem()
-        {
+            m_PersonalCarSelectData.PreUpdate(this, m_CityConfigurationSystem, m_CarPrefabQuery, Allocator.TempJob, out var jobHandle);
+            HandleBuyersJob buyerJob = new HandleBuyersJob
+            {
+                m_EntityType = SystemAPI.GetEntityTypeHandle(),
+                m_BuyerType = SystemAPI.GetComponentTypeHandle<ResourceBuyer>(true),
+                m_BoughtType = SystemAPI.GetComponentTypeHandle<ResourceBought>(true),
+                m_TripType = SystemAPI.GetBufferTypeHandle<TripNeeded>(),
+                m_CitizenType = SystemAPI.GetComponentTypeHandle<Citizen>(true),
+                m_CreatureDataType = SystemAPI.GetComponentTypeHandle<CreatureData>(true),
+                m_ResidentDataType = SystemAPI.GetComponentTypeHandle<ResidentData>(true),
+                m_AttendingMeetingType = SystemAPI.GetComponentTypeHandle<AttendingMeeting>(true),
+
+                m_ServiceAvailables = SystemAPI.GetComponentLookup<ServiceAvailable>(true),
+                m_PathInformation = SystemAPI.GetComponentLookup<PathInformation>(true),
+                m_Properties = SystemAPI.GetComponentLookup<PropertyRenter>(true),
+                m_CarKeepers = SystemAPI.GetComponentLookup<CarKeeper>(true),
+                m_BicycleOwners = SystemAPI.GetComponentLookup<BicycleOwner>(true),
+                m_ParkedCarData = SystemAPI.GetComponentLookup<ParkedCar>(true),
+                m_PersonalCarData = SystemAPI.GetComponentLookup<Game.Vehicles.PersonalCar>(true),
+                m_Targets = SystemAPI.GetComponentLookup<Target>(true),
+                m_CurrentBuildings = SystemAPI.GetComponentLookup<CurrentBuilding>(true),
+                m_OutsideConnections = SystemAPI.GetComponentLookup<Game.Objects.OutsideConnection>(true),
+                m_HouseholdMembers = SystemAPI.GetComponentLookup<HouseholdMember>(true),
+                m_Households = SystemAPI.GetComponentLookup<Household>(true),
+                m_TouristHouseholds = SystemAPI.GetComponentLookup<TouristHousehold>(true),
+                m_CommuterHouseholds = SystemAPI.GetComponentLookup<CommuterHousehold>(true),
+                m_Workers = SystemAPI.GetComponentLookup<Worker>(true),
+                m_DeliveryTrucks = SystemAPI.GetComponentLookup<Game.Vehicles.DeliveryTruck>(true),
+                m_StorageCompanies = SystemAPI.GetComponentLookup<Game.Companies.StorageCompany>(true),
+
+                m_Resources = SystemAPI.GetBufferLookup<Game.Economy.Resources>(true),
+                m_HouseholdCitizens = SystemAPI.GetBufferLookup<HouseholdCitizen>(true),
+                m_GuestVehicles = SystemAPI.GetBufferLookup<GuestVehicle>(true),
+                m_LayoutElements = SystemAPI.GetBufferLookup<LayoutElement>(true),
+
+                m_ResourcePrefabs = m_ResourceSystem.GetPrefabs(),
+                m_ResourceDatas = SystemAPI.GetComponentLookup<ResourceData>(true),
+                m_PrefabRefData = SystemAPI.GetComponentLookup<PrefabRef>(true),
+                m_PrefabCarData = SystemAPI.GetComponentLookup<CarData>(true),
+                m_ObjectGeometryData = SystemAPI.GetComponentLookup<ObjectGeometryData>(true),
+                m_PrefabHumanData = SystemAPI.GetComponentLookup<HumanData>(true),
+                m_CoordinatedMeetings = SystemAPI.GetComponentLookup<CoordinatedMeeting>(false),
+                m_HaveCoordinatedMeetingDatas = SystemAPI.GetBufferLookup<HaveCoordinatedMeetingData>(true),
+                m_OutsideConnectionDatas = SystemAPI.GetComponentLookup<OutsideConnectionData>(true),
+                m_Populations = SystemAPI.GetComponentLookup<Population>(true),
+                m_CurrentDistrictData = SystemAPI.GetComponentLookup<CurrentDistrict>(true),
+                m_DistrictModifiers = SystemAPI.GetBufferLookup<DistrictModifier>(true),
+
+                m_TimeOfDay = m_TimeSystem.normalizedTime,
+                m_FrameIndex = m_SimulationSystem.frameIndex,
+                m_RandomSeed = RandomSeed.Next(),
+                m_PathfindTypes = m_PathfindTypes,
+                m_HumanChunks = m_ResidentPrefabQuery.ToArchetypeChunkListAsync(World.UpdateAllocator.ToAllocator, out JobHandle chunkListHandle),
+                m_PersonalCarSelectData = m_PersonalCarSelectData,
+                m_PathfindQueue = m_PathfindSetupSystem.GetQueue(this, 80, 16).AsParallelWriter(),
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer().AsParallelWriter(),
+                m_EconomyParameterData = m_EconomyParameterQuery.GetSingleton<EconomyParameterData>(),
+                m_TripPriorityParameters = m_TripPriorityParametersQuery.GetSingleton<TripPriorityParametersData>(),
+                m_City = m_CitySystem.City,
+                m_SalesQueue = m_SalesQueue.AsParallelWriter(),
+
+                m_BuyerOutcomes = m_BuyerOutcomes,
+                m_FailedShoppingOrigins = m_FailedShoppingOrigins,
+                m_FailedShoppingResources = m_FailedShoppingResources
+            };
+            base.Dependency = JobChunkExtensions.ScheduleParallel(buyerJob, m_BuyerQuery, JobHandle.CombineDependencies(base.Dependency, chunkListHandle, jobHandle));
+            m_ResourceSystem.AddPrefabsReader(base.Dependency);
+            m_EndFrameBarrier.AddJobHandleForProducer(base.Dependency);
+            m_PathfindSetupSystem.AddQueueWriter(base.Dependency);
+            m_WriteDeps = JobHandle.CombineDependencies(base.Dependency, m_WriteDeps);
+            BuyJob buyJob = new BuyJob
+            {
+                m_Resources = SystemAPI.GetBufferLookup<Game.Economy.Resources>(false),
+                m_SalesQueue = m_SalesQueue,
+                m_Services = SystemAPI.GetComponentLookup<ServiceAvailable>(false),
+                m_TransformDatas = SystemAPI.GetComponentLookup<Game.Objects.Transform>(true),
+                m_PropertyRenters = SystemAPI.GetComponentLookup<PropertyRenter>(true),
+                m_OwnedVehicles = SystemAPI.GetBufferLookup<OwnedVehicle>(true),
+                m_HouseholdCitizens = SystemAPI.GetBufferLookup<HouseholdCitizen>(true),
+                m_HouseholdAnimals = SystemAPI.GetBufferLookup<HouseholdAnimal>(true),
+                m_Prefabs = SystemAPI.GetComponentLookup<PrefabRef>(true),
+                m_ServiceCompanies = SystemAPI.GetComponentLookup<ServiceCompanyData>(true),
+                m_Storages = SystemAPI.GetComponentLookup<Game.Companies.StorageCompany>(true),
+                m_Households = SystemAPI.GetComponentLookup<Household>(false),
+                m_BuyingCompanies = SystemAPI.GetComponentLookup<BuyingCompany>(false),
+                m_ResourceDatas = SystemAPI.GetComponentLookup<ResourceData>(true),
+                m_TradeCosts = SystemAPI.GetBufferLookup<TradeCost>(false),
+                m_CompanyStatistics = SystemAPI.GetComponentLookup<CompanyStatisticData>(false),
+                m_OutsideConnections = SystemAPI.GetComponentLookup<Game.Objects.OutsideConnection>(true),
+                m_ResourcePrefabs = m_ResourceSystem.GetPrefabs(),
+                m_RandomSeed = RandomSeed.Next(),
+                m_FrameIndex = m_SimulationSystem.frameIndex,
+                m_PersonalCarSelectData = m_PersonalCarSelectData,
+                m_PopulationEntity = m_PopulationQuery.GetSingletonEntity(),
+                m_CitizenConsumptionAccumulator = m_CityProductionStatisticSystem.GetCityResourceUsageAccumulator(CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens, out JobHandle accumulatorDeps),
+                m_CommandBuffer = m_EndFrameBarrier.CreateCommandBuffer()
+            };
+            base.Dependency = IJobExtensions.Schedule(buyJob, JobHandle.CombineDependencies(base.Dependency, accumulatorDeps));
+            m_PersonalCarSelectData.PostUpdate(base.Dependency);
+            m_ResourceSystem.AddPrefabsReader(base.Dependency);
+            m_CityProductionStatisticSystem.AddCityUsageAccumulatorWriter(CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens, base.Dependency);
+            m_EndFrameBarrier.AddJobHandleForProducer(base.Dependency);
         }
     }
 
